@@ -441,49 +441,45 @@ def save_conclusion_to_txt(conclusions, output_path):
 # ==========================================================
 # ✅ 拓展功能：环比为负时高亮显示（仅增强显示，不改动原逻辑）
 # ==========================================================
-import re
 from IPython.display import display, HTML
+import re
 
-def display_conclusion_with_color(conclusions):
+def display_conclusion_with_color_only(conclusions):
     """
-    拓展显示函数：
-    在 Jupyter Notebook / HTML 报告中，让环比为负的部分（-号 + 数值 + pp）显示为红色。
-    不改动任何原有逻辑。
+    对结论文字增加颜色显示：
+    - "不达标" 红色（跨区不达标干线除外）
+    - 环比负值 -x.xpp 红色
+    - 环比正值 +x.xpp 绿色
     """
     html_lines = []
+
     for line in conclusions:
-        # 将 -x.xpp 样式的环比替换为红色字体
-        line_html = re.sub(
-            r'(-\d+\.?\d*pp)',
-            r'<span style="color:red;font-weight:bold">\1</span>',
-            line
-        )
-        # 保持输出格式
+        line_html = line
+
+        # 标红：普通“不达标”，排除跨区不达标干线
+        def mark_not_met(match):
+            # 查找“不达标”前面是否包含“跨区不达标干线”，若是则不标红
+            start_idx = match.start()
+            if "跨区不达标干线" in line[max(0, start_idx-20):start_idx+20]:
+                return match.group(0)
+            return f'<span style="color:red;font-weight:bold">{match.group(0)}</span>'
+
+        line_html = re.sub(r'不达标', mark_not_met, line_html)
+
+        # 标红：环比负值
+        line_html = re.sub(r'(-\d+\.?\d*pp)', r'<span style="color:red;font-weight:bold">\1</span>', line_html)
+        # 标绿：环比正值
+        line_html = re.sub(r'(\+\d+\.?\d*pp)', r'<span style="color:green;font-weight:bold">\1</span>', line_html)
+
         html_lines.append(
             f"<pre style='font-family:Microsoft YaHei;font-size:12px;text-align:left'>{line_html}</pre>"
         )
+
     display(HTML("<br>".join(html_lines)))
 
+# 执行彩色显示
+display_conclusion_with_color_only(结论)
 
-def save_conclusion_to_txt_with_hint(conclusions, output_path):
-    """
-    拓展保存函数：
-    在保存 TXT 文件时，为环比为负的值添加“(↓)”提示。
-    """
-    with open(output_path, 'w', encoding='utf-8') as f:
-        for idx, region in enumerate(conclusions):
-            project_prefix = f"项目-{chr(65 + idx)}"
-            # 在负值前加 (↓) 提示
-            region_hint = re.sub(r'(-\d+\.?\d*pp)', r'(↓)\1', region)
-            f.write(f"{project_prefix}\n{region_hint}\n\n")
-    print(f"✅ 带提示的结论已保存至文件：{output_path}")
-
-
-# ==========================================================
-# ✅ 拓展使用说明（不影响原逻辑）
-# ==========================================================
-# 1️⃣ 生成完结论后，使用以下命令在 Jupyter 中彩色展示：
-display_conclusion_with_color(结论)
 
 # 2️⃣ 若需保存带提示版本的 TXT 文件，执行以下命令：
 output_txt_path_color = r'C:\jupyter文件\日报数据结论_带提示.txt'
