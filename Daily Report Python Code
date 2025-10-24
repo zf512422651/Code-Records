@@ -1,0 +1,490 @@
+# 日报模板 不含单量占比结论
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+import openpyxl  # 自动扩列宽用
+
+# ---------- 配置 ----------
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ---------- 文件路径 ----------
+file_path = r'C:\Uniuni-数据分析记录\日报\使用模板\日报数据1_1-python处理-250926.xlsx'
+output_excel_path = r"C:\jupyter文件\日报数据透视表17.xlsx"
+
+# ---------- 读取数据 ----------
+df = pd.read_excel(file_path)
+
+# ---------- 数据过滤 ----------
+# df = df[df['induct_region'] == 'JFK']
+df = df.dropna(subset=["zone"])
+
+# ---------- 生成透视表 ----------
+pivot = pd.pivot_table(
+    df,
+    index=['induct_region', 'partner_flag_nm', 'induct_region_dest_nm_flag', 'is_cross_region', 'dest_region'],
+    columns='date_flag',
+    values=['t199_count', 'ontime_delivery'],
+    aggfunc='sum'
+)
+
+# ---------- 汇总 ----------
+pivot_partner_flag = pivot.groupby(['induct_region', 'partner_flag_nm']).sum()
+pivot_dest_flag = pivot.groupby(['induct_region', 'partner_flag_nm', 'induct_region_dest_nm_flag']).sum()
+
+full_index = ['induct_region', 'partner_flag_nm', 'induct_region_dest_nm_flag', 'is_cross_region', 'dest_region']
+
+# partner_flag 汇总
+pivot_partner_flag = pivot_partner_flag.reset_index()
+for col in full_index:
+    if col not in pivot_partner_flag.columns:
+        pivot_partner_flag[col] = ''
+pivot_partner_flag['induct_region_dest_nm_flag'] = pivot_partner_flag['partner_flag_nm'] + " 汇总"
+pivot_partner_flag['is_cross_region'] = '汇总'
+pivot_partner_flag['dest_region'] = ''
+pivot_partner_flag = pivot_partner_flag.set_index(full_index)
+
+# dest_flag 汇总
+pivot_dest_flag = pivot_dest_flag.reset_index()
+for col in full_index:
+    if col not in pivot_dest_flag.columns:
+        pivot_dest_flag[col] = ''
+pivot_dest_flag['is_cross_region'] = pivot_dest_flag['induct_region_dest_nm_flag'] + " 汇总"
+pivot_dest_flag['dest_region'] = ''
+pivot_dest_flag = pivot_dest_flag.set_index(full_index)
+
+pivot_full = pivot.copy()
+
+# 拼接
+pivot_all = pd.concat([pivot_partner_flag, pivot_dest_flag, pivot_full], axis=0, sort=False)
+pivot_all = pivot_all.sort_index()
+
+# 转换 MultiIndex 列
+pivot_all.columns = [f"{col[0]}_{col[1]}" if isinstance(col, tuple) else col for col in pivot_all.columns]
+pivot_all = pivot_all.reset_index()
+
+# 父级百分比
+# ---------- 父级百分比（特殊处理 TEMU/非TEMU 用 TOTAL 汇总） ----------
+pivot_all = pivot_all.reset_index()
+
+# 找出汇总行
+parent_level = pivot_all[pivot_all['induct_region_dest_nm_flag'].astype(str).str.contains("汇总")]
+
+# TOTAL 汇总映射（按 region）
+total_sum_map = {}
+for idx, row in parent_level.iterrows():
+    if row['partner_flag_nm'] == "TOTAL-全量客户":
+        total_sum_map[row['induct_region']] = {
+            '本周': row.get('t199_count_本周', 0),
+            '上周': row.get('t199_count_上周', 0)
+        }
+
+# 普通汇总映射（partner_flag_nm 自身汇总）
+parent_sum_map = {}
+for idx, row in parent_level.iterrows():
+    key = (row['induct_region'], row['partner_flag_nm'])
+    parent_sum_map[key] = {
+        '本周': row.get('t199_count_本周', 0),
+        '上周': row.get('t199_count_上周', 0)
+    }
+
+pivot_all['本周199数父级百分比'] = np.nan
+pivot_all['上周199数父级百分比'] = np.nan
+
+for idx, row in pivot_all.iterrows():
+    key = (row['induct_region'], row['partner_flag_nm'])
+
+    # 汇总行才特殊处理
+    if pd.notna(row['induct_region_dest_nm_flag']) and "汇总" in str(row['induct_region_dest_nm_flag']):
+        if row['partner_flag_nm'] in ["TEMU-半托", "非TEMU-半托"]:
+            # 用 TOTAL 汇总作为分母
+            total = total_sum_map.get(row['induct_region'], {}).get('本周', 0)
+            if total:
+                pivot_all.at[idx, '本周199数父级百分比'] = row.get('t199_count_本周', 0) / total
+
+            total = total_sum_map.get(row['induct_region'], {}).get('上周', 0)
+            if total:
+                pivot_all.at[idx, '上周199数父级百分比'] = row.get('t199_count_上周', 0) / total
+        else:
+            # TOTAL 汇总或其它 → 自身汇总
+            if parent_sum_map.get(key, {}).get('本周', 0):
+                pivot_all.at[idx, '本周199数父级百分比'] = row.get('t199_count_本周', 0) / parent_sum_map[key]['本周']
+            if parent_sum_map.get(key, {}).get('上周', 0):
+                pivot_all.at[idx, '上周199数父级百分比'] = row.get('t199_count_上周', 0) / parent_sum_map[key]['上周']
+    else:
+        # 非汇总行 → 用父级汇总
+        if parent_sum_map.get(key, {}).get('本周', 0):
+            pivot_all.at[idx, '本周199数父级百分比'] = row.get('t199_count_本周', 0) / parent_sum_map[key]['本周']
+        if parent_sum_map.get(key, {}).get('上周', 0):
+            pivot_all.at[idx, '上周199数父级百分比'] = row.get('t199_count_上周', 0) / parent_sum_map[key]['上周']
+
+pivot_all = pivot_all.set_index(full_index).sort_index()
+
+
+# 按时率
+pivot_all['按时率_本周'] = pivot_all.get('ontime_delivery_本周', 0) / pivot_all.get('t199_count_本周', 1)
+pivot_all['按时率_上周'] = pivot_all.get('ontime_delivery_上周', 0) / pivot_all.get('t199_count_上周', 1)
+pivot_all['按时率对比'] = pivot_all['按时率_本周'] - pivot_all['按时率_上周']
+
+
+# 替换空值、NaN、报错值为 0
+pivot_all = pivot_all.fillna(0)
+
+# 也可以替换一些特定的错误值（比如报错值 -inf, inf 或其它情况）
+pivot_all.replace([np.inf, -np.inf], 0, inplace=True)
+
+# 再次确保没有NaN或者报错值
+pivot_all = pivot_all.fillna(0)
+
+
+# 列名映射
+column_rename_map = {
+    't199_count_上周': '上周199数',
+    't199_count_本周': '本周199数',
+    'ontime_delivery_上周': '上周按时妥投数',
+    'ontime_delivery_本周': '本周按时妥投数',
+    '按时率_本周': '本周按时率',
+    '按时率_上周': '上周按时率',
+    '按时率对比': '按时率对比'
+}
+pivot_all = pivot_all.rename(columns=column_rename_map)
+
+desired_order = [
+    '本周199数', '本周199数父级百分比', '本周按时妥投数', '本周按时率',
+    '上周199数', '上周199数父级百分比', '上周按时妥投数', '上周按时率', '按时率对比'
+]
+pivot_all = pivot_all[desired_order]
+
+# 排序逻辑
+partner_order = ['TOTAL-全量客户', 'TEMU-半托', '非TEMU-半托']
+dest_flag_order = ['短期待达标', '长期待优化'] + [f"{p} 汇总" for p in partner_order]
+is_cross_region_order = ['same_region', 'cross_region'] + [f"{c} 汇总" for c in dest_flag_order]
+
+pivot_all = pivot_all.reset_index()
+
+pivot_all['partner_flag_nm'] = pd.Categorical(
+    pivot_all['partner_flag_nm'], categories=partner_order, ordered=True
+)
+pivot_all['induct_region_dest_nm_flag'] = pd.Categorical(
+    pivot_all['induct_region_dest_nm_flag'], categories=dest_flag_order, ordered=True
+)
+pivot_all['is_cross_region'] = pd.Categorical(
+    pivot_all['is_cross_region'], categories=is_cross_region_order, ordered=True
+)
+
+pivot_all['is_cross_region'] = pivot_all['is_cross_region'].cat.add_categories([''])
+pivot_all['is_cross_region'] = pivot_all['is_cross_region'].fillna('')
+
+pivot_all = pivot_all.sort_values(
+    by=['induct_region', 'partner_flag_nm', 'induct_region_dest_nm_flag', 'is_cross_region', 'dest_region'],
+    ascending=[True, True, True, True, True]
+)
+
+pivot_all = pivot_all.set_index(full_index)
+
+# 恢复值表头样式
+column_rename_map_multi = {
+    ('t199_count', '上周'): '上周199数',
+    ('t199_count', '本周'): '本周199数',
+    ('ontime_delivery', '上周'): '上周按时妥投数',
+    ('ontime_delivery', '本周'): '本周按时妥投数',
+    ('按时率_本周', ''): '本周按时率',
+    ('按时率_上周', ''): '上周按时率',
+    ('按时率对比', ''): '按时率对比'
+}
+
+if isinstance(pivot_all.columns, pd.Index) and pivot_all.columns.nlevels == 1:
+    new_columns = []
+    for col in pivot_all.columns:
+        if '_' in col:
+            parts = col.rsplit('_', 1)
+            new_columns.append((parts[0], parts[1]))
+        else:
+            new_columns.append((col, ''))
+    pivot_all.columns = pd.MultiIndex.from_tuples(new_columns)
+
+pivot_all.columns = [
+    column_rename_map_multi.get(col, f"{col[0]}_{col[1]}" if col[1] else col[0])
+    for col in pivot_all.columns
+]
+
+# 样式设置
+def style_pivot(df):
+    styler = df.style.set_properties(**{
+        'font-family': 'Microsoft YaHei',
+        'font-size': '9pt',
+        'vertical-align': 'middle',
+        'text-align': 'left'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [('vertical-align', 'top'), ('text-align', 'left')]}
+    ])
+
+    styler = styler.format({
+        '本周199数': '{:,.0f}',
+        '上周199数': '{:,.0f}',
+        '本周按时妥投数': '{:,.0f}',
+        '上周按时妥投数': '{:,.0f}',
+        '本周199数父级百分比': '{:.2%}',
+        '上周199数父级百分比': '{:.2%}',
+        '本周按时率': '{:.2%}',
+        '上周按时率': '{:.2%}',
+        '按时率对比': '{:.2%}'
+    })
+
+    styler = styler.map(lambda v: 'color:red;font-weight:bold' if isinstance(v, (float, int)) and 0 < v < 0.95 else '', subset=['本周按时率','上周按时率'])
+
+    def color_bar(v):
+        if isinstance(v, (float, int)):
+            pct = min(abs(v)*100, 100)
+            if v < 0:
+                return f'background: linear-gradient(to right, red {pct}%, transparent {pct}%)'
+            else:
+                return f'background: linear-gradient(to right, blue {pct}%, transparent {pct}%)'
+        return ''
+
+    styler = styler.map(color_bar, subset=['按时率对比'])
+    styler = styler.apply(lambda row: ['background-color:#eaffea' if row['按时率对比'] < 0 else '' for _ in row], axis=1)
+
+    return styler
+
+pivot_all = style_pivot(pivot_all)
+
+# ---------- 保存 Excel ----------
+pivot_all.to_excel(output_excel_path, merge_cells=True)
+
+# ---------- 自动调整列宽 ----------
+wb = openpyxl.load_workbook(output_excel_path)
+ws = wb.active
+
+for col in ws.columns:
+    max_length = 0
+    column = col[0].column_letter
+    for cell in col:
+        try:
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        except:
+            pass
+    adjusted_width = (max_length + 2)
+    ws.column_dimensions[column].width = adjusted_width
+
+wb.save(output_excel_path)
+wb.close()
+
+print(f"✅ Excel 已生成（列宽自适应）: {output_excel_path}")
+
+pivot_all
+
+# ---------- 生成结论 ----------
+def generate_conclusion_with_filter(pivot_all, manual_region_order=None):
+    conclusions = []
+    pivot_plain = pivot_all.data if hasattr(pivot_all, "data") else pivot_all
+    regions = pivot_plain.index.get_level_values('induct_region').unique()
+
+    # ---------- 在这里做手动排序 ----------
+    if manual_region_order:
+        # 先取手动顺序里有的
+        ordered_regions = [r for r in manual_region_order if r in regions]
+        # 再补充未出现在手动顺序里的
+        ordered_regions += [r for r in regions if r not in manual_region_order]
+    else:
+        ordered_regions = regions
+
+    for region in ordered_regions:
+        df_region = pivot_plain.loc[region]
+        region_lines = []
+
+        for partner_flag in df_region.index.get_level_values('partner_flag_nm').unique():
+            try:
+                df_partner = df_region.loc[partner_flag]
+            except KeyError:
+                continue
+
+            partner_lines = []
+
+            # -------------------- 找汇总行 --------------------
+            try:
+                summary_rows = df_partner[
+                    df_partner.index.get_level_values('induct_region_dest_nm_flag').astype(str).str.contains("汇总")
+                ]
+                if not summary_rows.empty:
+                    for dest_flag in summary_rows.index.get_level_values('induct_region_dest_nm_flag').unique():
+                        row = summary_rows.xs(dest_flag, level='induct_region_dest_nm_flag')
+                        if isinstance(row, pd.DataFrame):
+                            row = row.loc[row['本周199数'].idxmax()] if not row.empty else row.iloc[0]
+                        if row["本周199数"] > 0:
+                            status = "达标" if row["本周按时率"] >= 0.95 else "不达标"
+                            rate = f"{row['本周按时率']*100:.1f}%"
+                            change = f"{row['按时率对比']*100:+.1f}pp"
+                            partner_lines.append(f"{partner_flag}：{status}({rate})，周环比{change}")
+            except Exception:
+                pass
+
+            # -------------------- 短期 / 长期细分（过滤 NaN） --------------------
+            dest_flags = [
+                df for df in df_partner.index.get_level_values('induct_region_dest_nm_flag').unique()
+                if pd.notna(df) and str(df).strip() != "" and "汇总" not in str(df)
+            ]
+
+            for dest_flag in dest_flags:
+                try:
+                    df_dest = df_partner.xs(dest_flag, level='induct_region_dest_nm_flag')
+                    if isinstance(df_dest, pd.DataFrame):
+                        if df_dest.empty:
+                            continue
+                        row = df_dest.loc[df_dest['本周199数'].idxmax()]
+                    else:
+                        row = df_dest
+
+                    if row["本周199数"] <= 0:
+                        continue
+
+                    # ===== 计算本周199数量占比 =====
+                    pct = row.get('本周199数父级百分比', np.nan)
+                    pct_str = f"{pct*100:.1f}%" if pd.notna(pct) else ""
+
+                    status = "达标" if row["本周按时率"] >= 0.95 else "不达标"
+                    rate = f"{row['本周按时率']*100:.1f}%"
+                    change = f"{row['按时率对比']*100:+.1f}pp"
+
+                    # 在达标/不达标前加199数量占比
+                    partner_lines.append(f"{dest_flag}：{status}({rate})，周环比{change}")
+
+                    # TEMU / 非TEMU 才有本地、跨区
+                    if partner_flag != "TOTAL-全量客户":
+                        try:
+                            df_local = df_partner.xs((dest_flag, "same_region"), level=['induct_region_dest_nm_flag', 'is_cross_region'])
+                            if isinstance(df_local, pd.DataFrame) and not df_local.empty:
+                                row_local = df_local.loc[df_local['本周199数'].idxmax()]
+                                if row_local["本周199数"] > 0:
+                                    status_local = "达标" if row_local["本周按时率"] >= 0.95 else "不达标"
+                                    rate_local = f"{row_local['本周按时率']*100:.1f}%"
+                                    change_local = f"{row_local['按时率对比']*100:+.1f}pp"
+                                    pct_local1 = row_local.get('本周199数父级百分比', np.nan)
+                                    pct_str_local1 = f"{pct_local1*100:.1f}%" if pd.notna(pct_local1) else ""
+                                    partner_lines.append(f"本地：{status_local}({rate_local})，周环比{change_local}")
+                        except KeyError:
+                            pass
+
+                        cross_lines_dict = {}
+                        try:
+                            df_cross = df_partner.xs(dest_flag, level='induct_region_dest_nm_flag')
+                            if isinstance(df_cross, pd.DataFrame):
+                                for idx, cross_row in df_cross.iterrows():
+                                    if idx[-2] == "cross_region" and cross_row["本周199数"] >= 50 and cross_row["本周按时率"] < 0.95:
+                                        rate_cross = f"{cross_row['本周按时率']*100:.1f}%"
+                                        change_cross = f"{cross_row['按时率对比']*100:+.1f}pp"
+                                        dest_region_cross = idx[-1]
+                                        cross_lines_dict.setdefault(region, []).append(
+                                            f"{dest_region_cross}（{rate_cross}，{change_cross}）"
+                                        )
+                        except KeyError:
+                            pass
+
+                        if cross_lines_dict:
+                            for start_region, dest_infos in cross_lines_dict.items():
+                                partner_lines.append(
+                                    f"跨区不达标干线（>=50单）：{start_region}到" + "、".join(dest_infos)
+                                )
+                        else:
+                               # 如果没有符合条件的干线，添加“无”的信息
+                               partner_lines.append("跨区不达标干线（>=50单）：无")
+
+                except Exception:
+                    continue
+
+            if partner_lines:
+                region_lines.extend(partner_lines)
+
+        if region_lines:
+            conclusions.append(f"{region}：\n" + "\n".join(region_lines))
+
+    return conclusions
+
+
+
+
+
+
+
+# ---------- 生成结论 ----------
+结论 = generate_conclusion_with_filter(pivot_all, manual_region_order=["LAX", "JFK", "DFW", "ORD", "MIA", "ATL", "SJC", "SEA", "DEN"])
+
+
+# 之后用结论_sorted
+
+# print("\n📌 结论：")
+# for line in 结论:
+#     print(line)
+
+# ---------- 将结论输出到txt文件 ----------
+def save_conclusion_to_txt(conclusions, output_path):
+    # 创建一个文件并写入结论
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for idx, region in enumerate(conclusions):
+            # 添加项目编号
+            project_prefix = f"项目-{chr(65 + idx)}"  # 项目编号：A, B, C 等等
+            f.write(f"{project_prefix}\n")
+            f.write(f"{region}\n\n")
+
+# 输出文件路径
+# output_txt_path = r'C:\jupyter文件\日报数据结论1.txt'
+
+# 调用保存函数
+# save_conclusion_to_txt(结论, output_txt_path)
+
+# print(f"✅ 结论已保存至文件：{output_txt_path}")
+
+
+# ==========================================================
+# ✅ 拓展功能：环比为负时高亮显示（仅增强显示，不改动原逻辑）
+# ==========================================================
+import re
+from IPython.display import display, HTML
+
+def display_conclusion_with_color(conclusions):
+    """
+    拓展显示函数：
+    在 Jupyter Notebook / HTML 报告中，让环比为负的部分（-号 + 数值 + pp）显示为红色。
+    不改动任何原有逻辑。
+    """
+    html_lines = []
+    for line in conclusions:
+        # 将 -x.xpp 样式的环比替换为红色字体
+        line_html = re.sub(
+            r'(-\d+\.?\d*pp)',
+            r'<span style="color:red;font-weight:bold">\1</span>',
+            line
+        )
+        # 保持输出格式
+        html_lines.append(
+            f"<pre style='font-family:Microsoft YaHei;font-size:12px;text-align:left'>{line_html}</pre>"
+        )
+    display(HTML("<br>".join(html_lines)))
+
+
+def save_conclusion_to_txt_with_hint(conclusions, output_path):
+    """
+    拓展保存函数：
+    在保存 TXT 文件时，为环比为负的值添加“(↓)”提示。
+    """
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for idx, region in enumerate(conclusions):
+            project_prefix = f"项目-{chr(65 + idx)}"
+            # 在负值前加 (↓) 提示
+            region_hint = re.sub(r'(-\d+\.?\d*pp)', r'(↓)\1', region)
+            f.write(f"{project_prefix}\n{region_hint}\n\n")
+    print(f"✅ 带提示的结论已保存至文件：{output_path}")
+
+
+# ==========================================================
+# ✅ 拓展使用说明（不影响原逻辑）
+# ==========================================================
+# 1️⃣ 生成完结论后，使用以下命令在 Jupyter 中彩色展示：
+display_conclusion_with_color(结论)
+
+# 2️⃣ 若需保存带提示版本的 TXT 文件，执行以下命令：
+output_txt_path_color = r'C:\jupyter文件\日报数据结论_带提示.txt'
+save_conclusion_to_txt_with_hint(结论, output_txt_path_color)
