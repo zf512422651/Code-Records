@@ -1,4 +1,4 @@
-# 日报模板 不含单量占比结论
+# 日报模板 不含单量占比结论 不达标标红，环比<0标红，环比>0标绿
 
 import pandas as pd
 import numpy as np
@@ -277,17 +277,20 @@ print(f"✅ Excel 已生成（列宽自适应）: {output_excel_path}")
 
 pivot_all
 
-# ---------- 生成结论 ----------
-def generate_conclusion_with_filter(pivot_all, manual_region_order=None):
+
+# ---------- 结论生成 ----------
+import pandas as pd
+import numpy as np
+from IPython.display import display, HTML
+
+def generate_colored_conclusion(pivot_all, manual_region_order=None):
     conclusions = []
     pivot_plain = pivot_all.data if hasattr(pivot_all, "data") else pivot_all
     regions = pivot_plain.index.get_level_values('induct_region').unique()
 
-    # ---------- 在这里做手动排序 ----------
+    # ---------- 区域手动排序 ----------
     if manual_region_order:
-        # 先取手动顺序里有的
         ordered_regions = [r for r in manual_region_order if r in regions]
-        # 再补充未出现在手动顺序里的
         ordered_regions += [r for r in regions if r not in manual_region_order]
     else:
         ordered_regions = regions
@@ -304,7 +307,7 @@ def generate_conclusion_with_filter(pivot_all, manual_region_order=None):
 
             partner_lines = []
 
-            # -------------------- 找汇总行 --------------------
+            # ---- 汇总行 ----
             try:
                 summary_rows = df_partner[
                     df_partner.index.get_level_values('induct_region_dest_nm_flag').astype(str).str.contains("汇总")
@@ -314,15 +317,28 @@ def generate_conclusion_with_filter(pivot_all, manual_region_order=None):
                         row = summary_rows.xs(dest_flag, level='induct_region_dest_nm_flag')
                         if isinstance(row, pd.DataFrame):
                             row = row.loc[row['本周199数'].idxmax()] if not row.empty else row.iloc[0]
-                        if row["本周199数"] > 0:
-                            status = "达标" if row["本周按时率"] >= 0.95 else "不达标"
-                            rate = f"{row['本周按时率']*100:.1f}%"
-                            change = f"{row['按时率对比']*100:+.1f}pp"
-                            partner_lines.append(f"{partner_flag}：{status}({rate})，周环比{change}")
+                    if row["本周199数"] > 0:
+                        # 达标逻辑
+                        if row["本周按时率"] >= 0.95:
+                           status_html = f'<span style="color:green;font-weight:bold">达标({row["本周按时率"]*100:.1f}%)</span>'
+                        else:
+                           status_html = f'<span style="color:red;font-weight:bold">不达标({row["本周按时率"]*100:.1f}%)</span>'
+
+                        rate_html = f'{row["本周按时率"]*100:.1f}%'
+                        change_html = f'{row["按时率对比"]*100:+.1f}pp'
+                        # 环比颜色
+                        if row["按时率对比"] > 0:
+                            change_html = f'<span style="color:green;font-weight:bold">{change_html}</span>'
+                        elif row["按时率对比"] < 0:
+                            change_html = f'<span style="color:red;font-weight:bold">{change_html}</span>'
+                        partner_lines.append(f"{partner_flag}：{status_html}，周环比{change_html}")
             except Exception:
                 pass
 
-            # -------------------- 短期 / 长期细分（过滤 NaN） --------------------
+
+            # ---- 短期/长期细分 ----
+
+            
             dest_flags = [
                 df for df in df_partner.index.get_level_values('induct_region_dest_nm_flag').unique()
                 if pd.notna(df) and str(df).strip() != "" and "汇总" not in str(df)
@@ -341,56 +357,73 @@ def generate_conclusion_with_filter(pivot_all, manual_region_order=None):
                     if row["本周199数"] <= 0:
                         continue
 
-                    # ===== 计算本周199数量占比 =====
-                    pct = row.get('本周199数父级百分比', np.nan)
-                    pct_str = f"{pct*100:.1f}%" if pd.notna(pct) else ""
+                    # 达标逻辑
+                    if row["本周按时率"] >= 0.95:
+                        status_html = f'<span style="color:green;font-weight:bold">达标({row["本周按时率"]*100:.1f}%)</span>'
+                    else:
+                        status_html = f'<span style="color:red;font-weight:bold">不达标({row["本周按时率"]*100:.1f}%)</span>'
 
-                    status = "达标" if row["本周按时率"] >= 0.95 else "不达标"
-                    rate = f"{row['本周按时率']*100:.1f}%"
-                    change = f"{row['按时率对比']*100:+.1f}pp"
+                    rate_html = f'{row["本周按时率"]*100:.1f}%'
+                    change_html = f'{row["按时率对比"]*100:+.1f}pp'
+                    # 环比颜色
+                    if row["按时率对比"] > 0:
+                        change_html = f'<span style="color:green;font-weight:bold">{change_html}</span>'
+                    elif row["按时率对比"] < 0:
+                        change_html = f'<span style="color:red;font-weight:bold">{change_html}</span>'
 
-                    # 在达标/不达标前加199数量占比
-                    partner_lines.append(f"{dest_flag}：{status}({rate})，周环比{change}")
+                    partner_lines.append(f"{dest_flag}：{status_html}，周环比{change_html}")
 
-                    # TEMU / 非TEMU 才有本地、跨区
+                    # ---- TEMU/非TEMU 本地/跨区 ----
                     if partner_flag != "TOTAL-全量客户":
+                        # 本地
                         try:
                             df_local = df_partner.xs((dest_flag, "same_region"), level=['induct_region_dest_nm_flag', 'is_cross_region'])
                             if isinstance(df_local, pd.DataFrame) and not df_local.empty:
                                 row_local = df_local.loc[df_local['本周199数'].idxmax()]
                                 if row_local["本周199数"] > 0:
-                                    status_local = "达标" if row_local["本周按时率"] >= 0.95 else "不达标"
-                                    rate_local = f"{row_local['本周按时率']*100:.1f}%"
-                                    change_local = f"{row_local['按时率对比']*100:+.1f}pp"
+                                    if row_local["本周按时率"] >= 0.95:
+                                        status_local = f'<span style="color:green;font-weight:bold">达标({row_local["本周按时率"]*100:.1f}%)</span>'
+                                    else:
+                                        status_local = f'<span style="color:red;font-weight:bold">不达标({row_local["本周按时率"]*100:.1f}%)</span>'
+                                    rate_local = f'{row_local["本周按时率"]*100:.1f}%'
+                                    change_local = f'{row_local["按时率对比"]*100:+.1f}pp'
                                     pct_local1 = row_local.get('本周199数父级百分比', np.nan)
                                     pct_str_local1 = f"{pct_local1*100:.1f}%" if pd.notna(pct_local1) else ""
-                                    partner_lines.append(f"本地：{status_local}({rate_local})，周环比{change_local}")
+                                    if row_local["按时率对比"] > 0:
+                                        change_local = f'<span style="color:green;font-weight:bold">{change_local}</span>'
+                                    elif row_local["按时率对比"] < 0:
+                                        change_local = f'<span style="color:red;font-weight:bold">{change_local}</span>'
+                                    partner_lines.append(f"本地：{status_local}，周环比{change_local}")
                         except KeyError:
                             pass
-
-                        cross_lines_dict = {}
+                        
+                        # 跨区干线
+                        cross_lines_list = []
                         try:
                             df_cross = df_partner.xs(dest_flag, level='induct_region_dest_nm_flag')
                             if isinstance(df_cross, pd.DataFrame):
                                 for idx, cross_row in df_cross.iterrows():
                                     if idx[-2] == "cross_region" and cross_row["本周199数"] >= 50 and cross_row["本周按时率"] < 0.95:
-                                        rate_cross = f"{cross_row['本周按时率']*100:.1f}%"
-                                        change_cross = f"{cross_row['按时率对比']*100:+.1f}pp"
+                                        rate_cross = f'{cross_row["本周按时率"]*100:.1f}%'
+                                        change_cross = f'{cross_row["按时率对比"]*100:+.1f}pp'
+                                        # 跨区干线颜色规则
+                                        if cross_row["本周按时率"] < 0.95:
+                                            rate_cross = f'<span style="color:red;font-weight:bold">{rate_cross}</span>'
+                                        else:
+                                            rate_cross = f'<span style="color:green;font-weight:bold">{rate_cross}</span>'
+                                        if cross_row["按时率对比"] > 0:
+                                            change_cross = f'<span style="color:green;font-weight:bold">{change_cross}</span>'
+                                        elif cross_row["按时率对比"] < 0:
+                                            change_cross = f'<span style="color:red;font-weight:bold">{change_cross}</span>'
                                         dest_region_cross = idx[-1]
-                                        cross_lines_dict.setdefault(region, []).append(
-                                            f"{dest_region_cross}（{rate_cross}，{change_cross}）"
-                                        )
+                                        cross_lines_list.append(f"{dest_region_cross}（{rate_cross}，{change_cross}）")
                         except KeyError:
                             pass
 
-                        if cross_lines_dict:
-                            for start_region, dest_infos in cross_lines_dict.items():
-                                partner_lines.append(
-                                    f"跨区不达标干线（>=50单）：{start_region}到" + "、".join(dest_infos)
-                                )
+                        if cross_lines_list:
+                            partner_lines.append("跨区不达标干线（>=50单）：" + "、".join(cross_lines_list))
                         else:
-                               # 如果没有符合条件的干线，添加“无”的信息
-                               partner_lines.append("跨区不达标干线（>=50单）：无")
+                            partner_lines.append("跨区不达标干线（>=50单）：无")
 
                 except Exception:
                     continue
@@ -399,88 +432,11 @@ def generate_conclusion_with_filter(pivot_all, manual_region_order=None):
                 region_lines.extend(partner_lines)
 
         if region_lines:
-            conclusions.append(f"{region}：\n" + "\n".join(region_lines))
+            conclusions.append(f"{region}：<br>" + "<br>".join(region_lines))
 
-    return conclusions
+    # 最终 HTML 输出
+    html_output = "<div style='font-family:Microsoft YaHei;font-size:12px;text-align:left'>" + "<br><br>".join(conclusions) + "</div>"
+    display(HTML(html_output))
+    return html_output
 
-
-
-
-
-
-
-# ---------- 生成结论 ----------
-结论 = generate_conclusion_with_filter(pivot_all, manual_region_order=["LAX", "JFK", "DFW", "ORD", "MIA", "ATL", "SJC", "SEA", "DEN"])
-
-
-# 之后用结论_sorted
-
-# print("\n📌 结论：")
-# for line in 结论:
-#     print(line)
-
-# ---------- 将结论输出到txt文件 ----------
-def save_conclusion_to_txt(conclusions, output_path):
-    # 创建一个文件并写入结论
-    with open(output_path, 'w', encoding='utf-8') as f:
-        for idx, region in enumerate(conclusions):
-            # 添加项目编号
-            project_prefix = f"项目-{chr(65 + idx)}"  # 项目编号：A, B, C 等等
-            f.write(f"{project_prefix}\n")
-            f.write(f"{region}\n\n")
-
-# 输出文件路径
-# output_txt_path = r'C:\jupyter文件\日报数据结论1.txt'
-
-# 调用保存函数
-# save_conclusion_to_txt(结论, output_txt_path)
-
-# print(f"✅ 结论已保存至文件：{output_txt_path}")
-
-
-# ==========================================================
-# ✅ 拓展功能：环比为负时高亮显示（仅增强显示，不改动原逻辑）
-# ==========================================================
-from IPython.display import display, HTML
-import re
-
-def display_conclusion_with_color_only(conclusions):
-    """
-    对结论文字增加颜色显示：
-    - "不达标" 红色（跨区不达标干线除外）
-    - 环比负值 -x.xpp 红色
-    - 环比正值 +x.xpp 绿色
-    """
-    html_lines = []
-
-    for line in conclusions:
-        line_html = line
-
-        # 标红：普通“不达标”，排除跨区不达标干线
-        def mark_not_met(match):
-            # 查找“不达标”前面是否包含“跨区不达标干线”，若是则不标红
-            start_idx = match.start()
-            if "跨区不达标干线" in line[max(0, start_idx-20):start_idx+20]:
-                return match.group(0)
-            return f'<span style="color:red;font-weight:bold">{match.group(0)}</span>'
-
-        line_html = re.sub(r'不达标', mark_not_met, line_html)
-
-        # 标红：环比负值
-        line_html = re.sub(r'(-\d+\.?\d*pp)', r'<span style="color:red;font-weight:bold">\1</span>', line_html)
-        # 标绿：环比正值
-        line_html = re.sub(r'(\+\d+\.?\d*pp)', r'<span style="color:green;font-weight:bold">\1</span>', line_html)
-
-        html_lines.append(
-            f"<pre style='font-family:Microsoft YaHei;font-size:12px;text-align:left'>{line_html}</pre>"
-        )
-
-    display(HTML("<br>".join(html_lines)))
-
-# 执行彩色显示
-display_conclusion_with_color_only(结论)
-
-
-# 2️⃣ 若需保存带提示版本的 TXT 文件，执行以下命令：
-output_txt_path_color = r'C:\jupyter文件\日报数据结论_带提示.txt'
-save_conclusion_to_txt_with_hint(结论, output_txt_path_color)
+html结论 = generate_colored_conclusion(pivot_all, manual_region_order=["LAX","JFK","DFW","ORD","MIA","ATL","SJC","SEA","DEN"])
