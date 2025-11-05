@@ -398,32 +398,36 @@ def generate_colored_conclusion(pivot_all, manual_region_order=None):
                             pass
                         
                         # 跨区干线
-                        cross_lines_list = []
+                        cross_lines_dict = {}  # 用字典存储每个起始地对应的不达标跨区干线
                         try:
                             df_cross = df_partner.xs(dest_flag, level='induct_region_dest_nm_flag')
                             if isinstance(df_cross, pd.DataFrame):
                                 for idx, cross_row in df_cross.iterrows():
+                                    # 条件：跨区、不达标、单量 >=50
                                     if idx[-2] == "cross_region" and cross_row["本周199数"] >= 50 and cross_row["本周按时率"] < 0.95:
+                                        dest_region_cross = idx[-1]
                                         rate_cross = f'{cross_row["本周按时率"]*100:.1f}%'
                                         change_cross = f'{cross_row["按时率对比"]*100:+.1f}pp'
-                                        # 跨区干线颜色规则
-                                        if cross_row["本周按时率"] < 0.95:
-                                            rate_cross = f'<span style="color:red;font-weight:bold">{rate_cross}</span>'
-                                        else:
-                                            rate_cross = f'<span style="color:green;font-weight:bold">{rate_cross}</span>'
+                                        # 颜色标记
+                                        rate_cross = f'<span style="color:red;font-weight:bold">{rate_cross}</span>'
                                         if cross_row["按时率对比"] > 0:
                                             change_cross = f'<span style="color:green;font-weight:bold">{change_cross}</span>'
                                         elif cross_row["按时率对比"] < 0:
                                             change_cross = f'<span style="color:red;font-weight:bold">{change_cross}</span>'
-                                        dest_region_cross = idx[-1]
-                                        cross_lines_list.append(f"{dest_region_cross}（{rate_cross}，{change_cross}）")
+                                        start_region = region  # 使用当前循环的 region 作为起始地
+                                        cross_lines_dict.setdefault(start_region, []).append(
+                                            f"{dest_region_cross}（{rate_cross}，{change_cross}）"
+                                        )
                         except KeyError:
                             pass
-
-                        if cross_lines_list:
-                            partner_lines.append("跨区不达标干线（>=50单）：" + "、".join(cross_lines_list))
+                        
+                        # 输出跨区不达标干线结论
+                        if cross_lines_dict:
+                            for start_region, dest_infos in cross_lines_dict.items():
+                                partner_lines.append(f"跨区不达标干线（>=50单）：{start_region}到" + "、".join(dest_infos))
                         else:
                             partner_lines.append("跨区不达标干线（>=50单）：无")
+
 
                 except Exception:
                     continue
